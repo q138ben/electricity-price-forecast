@@ -3,6 +3,8 @@ import numpy as np
 from sklearn.preprocessing import StandardScaler
 from typing import Tuple, List
 from sklearn.model_selection import TimeSeriesSplit
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 def create_time_features(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -189,4 +191,94 @@ def scale_features(X_train, X_test):
     X_train_scaled[numerical_columns] = scaler.fit_transform(X_train[numerical_columns])
     X_test_scaled[numerical_columns] = scaler.transform(X_test[numerical_columns])
     
-    return X_train_scaled, X_test_scaled 
+    return X_train_scaled, X_test_scaled
+
+def plot_training_data(df: pd.DataFrame, target_col: str = 'SpotPriceDKK', save_path: str = None):
+    """
+    Create visualization plots for training data
+    
+    Parameters:
+    -----------
+    df : pd.DataFrame
+        DataFrame with training data
+    target_col : str
+        Name of the target column
+    save_path : str, optional
+        Path to save the plots
+    """
+    # Set style
+    plt.style.use('seaborn')
+    
+    # Create figure with subplots
+    fig = plt.figure(figsize=(15, 10))
+    gs = fig.add_gridspec(2, 2)
+    
+    # 1. Time series plot of prices
+    ax1 = fig.add_subplot(gs[0, :])
+    df.plot(x='HourUTC', y=target_col, ax=ax1)
+    ax1.set_title('Electricity Prices Over Time')
+    ax1.set_xlabel('Time')
+    ax1.set_ylabel('Price (DKK/MWh)')
+    ax1.grid(True)
+    
+    # 2. Price distribution
+    ax2 = fig.add_subplot(gs[1, 0])
+    sns.histplot(data=df, x=target_col, bins=50, ax=ax2)
+    ax2.set_title('Distribution of Electricity Prices')
+    ax2.set_xlabel('Price (DKK/MWh)')
+    ax2.set_ylabel('Count')
+    
+    # 3. Average prices by hour of day
+    ax3 = fig.add_subplot(gs[1, 1])
+    hourly_prices = df.groupby(df['HourUTC'].dt.hour)[target_col].mean()
+    hourly_prices.plot(kind='bar', ax=ax3)
+    ax3.set_title('Average Prices by Hour of Day')
+    ax3.set_xlabel('Hour of Day')
+    ax3.set_ylabel('Average Price (DKK/MWh)')
+    
+    # Adjust layout
+    plt.tight_layout()
+    
+    # Save plot if path is provided
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    
+    plt.show()
+
+def plot_feature_importance(model, feature_names: List[str], save_path: str = None):
+    """
+    Plot feature importance for a trained model
+    
+    Parameters:
+    -----------
+    model : object
+        Trained model with feature_importances_ attribute
+    feature_names : List[str]
+        List of feature names
+    save_path : str, optional
+        Path to save the plot
+    """
+    # Get feature importance
+    importance = model.feature_importances_
+    
+    # Create DataFrame with feature importance
+    feature_importance = pd.DataFrame({
+        'feature': feature_names,
+        'importance': importance
+    })
+    
+    # Sort by importance
+    feature_importance = feature_importance.sort_values('importance', ascending=False)
+    
+    # Create plot
+    plt.figure(figsize=(12, 6))
+    sns.barplot(data=feature_importance.head(10), x='importance', y='feature')
+    plt.title('Top 10 Most Important Features')
+    plt.xlabel('Feature Importance')
+    plt.ylabel('Feature Name')
+    
+    # Save plot if path is provided
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    
+    plt.show() 
