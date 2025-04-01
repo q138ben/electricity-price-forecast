@@ -103,6 +103,9 @@ def prepare_hourly_data(df: pd.DataFrame,
         df['month_utc'] = df['HourUTC'].dt.month
         df['dayofweek_utc'] = df['HourUTC'].dt.dayofweek
         df['quarter_utc'] = df['HourUTC'].dt.quarter
+        df['year_utc'] = df['HourUTC'].dt.year
+        df['is_weekend'] = df['dayofweek_utc'].isin([5, 6]).astype(int)
+        df['is_holiday'] = df['dayofweek_utc'].isin([5, 6]).astype(int)  # Simplified holiday detection
         df.drop('HourUTC', axis=1, inplace=True)
     
     df.drop('PriceArea', axis=1, inplace=True)
@@ -115,6 +118,31 @@ def prepare_hourly_data(df: pd.DataFrame,
     # Lag features (all these will be available at prediction time)
     for lag in [24, 48, 72, 168]:  # 1 day, 2 days, 3 days, 1 week
         df[f'price_lag_{lag}h'] = df['SpotPriceDKK'].shift(lag)
+        # Add rolling statistics
+        df[f'price_rolling_mean_{lag}h'] = df['SpotPriceDKK'].rolling(window=lag).mean()
+        df[f'price_rolling_std_{lag}h'] = df['SpotPriceDKK'].rolling(window=lag).std()
+        df[f'price_rolling_max_{lag}h'] = df['SpotPriceDKK'].rolling(window=lag).max()
+        df[f'price_rolling_min_{lag}h'] = df['SpotPriceDKK'].rolling(window=lag).min()
+    
+    # Add price differences
+    for lag in [24, 48, 72, 168]:
+        df[f'price_diff_{lag}h'] = df['SpotPriceDKK'] - df[f'price_lag_{lag}h']
+    
+    # Add seasonal features
+    df['hour_sin'] = np.sin(2 * np.pi * df['hour_utc'] / 24)
+    df['hour_cos'] = np.cos(2 * np.pi * df['hour_utc'] / 24)
+    df['month_sin'] = np.sin(2 * np.pi * df['month_utc'] / 12)
+    df['month_cos'] = np.cos(2 * np.pi * df['month_utc'] / 12)
+    df['dayofweek_sin'] = np.sin(2 * np.pi * df['dayofweek_utc'] / 7)
+    df['dayofweek_cos'] = np.cos(2 * np.pi * df['dayofweek_utc'] / 7)
+    
+    # Add price momentum features
+    for window in [3, 6, 12, 24]:
+        df[f'price_momentum_{window}h'] = df['SpotPriceDKK'].pct_change(window)
+    
+    # Add price volatility features
+    for window in [3, 6, 12, 24]:
+        df[f'price_volatility_{window}h'] = df['SpotPriceDKK'].rolling(window=window).std()
     
     df.dropna(inplace=True)
     
