@@ -7,7 +7,7 @@ from tensorflow.keras.models import Sequential, load_model
 from tensorflow.keras.layers import LSTM, Dense, Dropout, BatchNormalization
 from tensorflow.keras.callbacks import EarlyStopping
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.optimizers.legacy import Adam
 
 # 1. Data Loading and Preprocessing
 def load_and_preprocess_data(file_path):
@@ -113,7 +113,7 @@ def build_lstm_model(lookback, n_features, n_outputs=24):
     return model
 
 # 4. Training and Evaluation
-def train_and_evaluate_model(X, y, test_size=0.2, epochs=1, batch_size=32):
+def train_and_evaluate_model(X, y, test_size=0.2, epochs=100, batch_size=32):
     """
     Train and evaluate LSTM model
     """
@@ -156,10 +156,14 @@ def train_and_evaluate_model(X, y, test_size=0.2, epochs=1, batch_size=32):
     return model, history, X_train, X_test, y_train, y_test, y_train_pred, y_test_pred
 
 # 5. Visualization
-def visualize_results(df, y_test, y_test_pred, target_scaler, test_dates, price_col='SpotPriceDKK'):
+def visualize_results(df, y_test, y_test_pred, target_scaler, test_dates, price_col='SpotPriceDKK', save_path='./plots/'):
     """
-    Visualize prediction results
+    Visualize prediction results and save the figures
     """
+    # Create directory for plots if it doesn't exist
+    import os
+    os.makedirs(save_path, exist_ok=True)
+    
     # Inverse transform predictions
     y_test_inv = target_scaler.inverse_transform(y_test)
     y_pred_inv = target_scaler.inverse_transform(y_test_pred)
@@ -187,7 +191,10 @@ def visualize_results(df, y_test, y_test_pred, target_scaler, test_dates, price_
     plt.ylabel('Mean Absolute Error')
     plt.grid(True)
     plt.tight_layout()
-    plt.show()
+    
+    # Save the metrics plot
+    plt.savefig(os.path.join(save_path, 'forecast_metrics_by_hour.png'), dpi=300)
+    plt.close()
     
     # Plot example forecasts
     # Select a random sample of 3 days
@@ -216,7 +223,10 @@ def visualize_results(df, y_test, y_test_pred, target_scaler, test_dates, price_
         plt.xticks(rotation=45)
     
     plt.tight_layout()
-    plt.show()
+    
+    # Save the sample forecasts plot
+    plt.savefig(os.path.join(save_path, 'sample_forecasts.png'), dpi=300)
+    plt.close()
     
     # Calculate overall metrics
     overall_mse = mean_squared_error(y_test_inv.flatten(), y_pred_inv.flatten())
@@ -264,7 +274,7 @@ def generate_day_ahead_forecast(model, latest_data, feature_scaler, target_scale
     return forecast_df
 
 # 7. Full Pipeline
-def run_electricity_price_forecasting(file_path, price_col='SpotPriceDKK'):
+def run_electricity_price_forecasting(file_path, price_col='SpotPriceDKK', save_path='./plots/'):
     """
     Run the full electricity price forecasting pipeline
     """
@@ -287,10 +297,9 @@ def run_electricity_price_forecasting(file_path, price_col='SpotPriceDKK'):
     # 4. Visualize results
     print("Visualizing results...")
     mse, mae, overall_mse, overall_mae, overall_r2 = visualize_results(
-        df, y_test, y_test_pred, target_scaler, test_dates, price_col
+        df, y_test, y_test_pred, target_scaler, test_dates, price_col, save_path
     )
     
-
     # 5. Generate forecast for next day (using the last available data)
     print("Generating forecast for next day...")
     latest_data = X_test[-1]  # Use the last test sample
@@ -301,11 +310,12 @@ def run_electricity_price_forecasting(file_path, price_col='SpotPriceDKK'):
     forecast_df = generate_day_ahead_forecast(
         model, latest_data, feature_scaler, target_scaler, last_known_timestamp, price_col
     )
-
+    
     print("\nDay-ahead forecast:")
     print(forecast_df)
     
     # Plot forecast
+    import os
     plt.figure(figsize=(12, 6))
     plt.plot(forecast_df.index, forecast_df[f'Forecast_{price_col}'], 'r-o', label='Forecast')
     plt.title('Day-Ahead Electricity Price Forecast')
@@ -315,7 +325,22 @@ def run_electricity_price_forecasting(file_path, price_col='SpotPriceDKK'):
     plt.legend()
     plt.xticks(rotation=45)
     plt.tight_layout()
-    plt.show()
+    
+    # Save the day-ahead forecast plot
+    plt.savefig(os.path.join(save_path, 'day_ahead_forecast.png'), dpi=300)
+    plt.close()
+    
+    # Also save the training history
+    plt.figure(figsize=(10, 6))
+    plt.plot(history.history['loss'], label='Training Loss')
+    plt.plot(history.history['val_loss'], label='Validation Loss')
+    plt.title('Model Loss During Training')
+    plt.ylabel('Loss')
+    plt.xlabel('Epoch')
+    plt.legend()
+    plt.grid(True)
+    plt.savefig(os.path.join(save_path, 'training_history.png'), dpi=300)
+    plt.close()
     
     return model, feature_scaler, target_scaler, forecast_df, overall_mse, overall_mae, overall_r2
 
