@@ -1,3 +1,15 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+Electricity Price Forecasting with LSTM
+"""
+
+# # Electricity Price Forecasting with LSTM
+#
+# This notebook implements an LSTM-based model for forecasting electricity prices. The model uses historical price data along with various features to predict prices for the next 24 hours.
+
+# ## 1. Import Required Libraries
+
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -8,18 +20,166 @@ from tensorflow.keras.layers import LSTM, Dense, Dropout, BatchNormalization
 from tensorflow.keras.callbacks import EarlyStopping, Callback, ReduceLROnPlateau, LearningRateScheduler
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from tensorflow.keras.optimizers.legacy import Adam
-import os
-import pickle
-import gc  # Add garbage collector
 
-# 1. Data Loading and Preprocessing
-def load_and_preprocess_data(file_path):
+
+import requests
+import pandas as pd
+from datetime import datetime, timedelta
+import logging
+
+class EnerginetDataFetcher:
+    """Class to fetch electricity price data from Energinet's API"""
+    
+    def __init__(self):
+        self.base_url = "https://api.energidataservice.dk/dataset/Elspotprices"
+        self.setup_logging()
+    
+    def setup_logging(self):
+        """Setup logging configuration"""
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s'
+        )
+        self.logger = logging.getLogger(__name__)
+    
+    def fetch_elspot_prices(self, start_date=None, end_date=None, price_area='SE4'):
+        """
+        Fetch electricity spot prices from Energinet's API
+        
+        Args:
+            start_date (str): Start date in format 'YYYY-MM-DD'
+            end_date (str): End date in format 'YYYY-MM-DD'
+            price_area (str): Price area (e.g., 'DK1', 'DK2')
+        
+        Returns:
+            pd.DataFrame: DataFrame containing the spot prices
+        """
+        try:
+            # Construct the query parameters
+            params = {
+                'limit': 100000,  # Maximum limit to get all data
+                'filter': f'{{"PriceArea": "{price_area}"}}'
+            }
+            
+            if start_date and end_date:
+                params['start'] = start_date
+                params['end'] = end_date
+            
+            # Make the API request
+            response = requests.get(self.base_url, params=params)
+            response.raise_for_status()  # Raise an exception for bad status codes
+            
+            # Parse the response
+            result = response.json()
+            
+            if not result.get('records'):
+                self.logger.warning("No data found for the specified parameters")
+                return pd.DataFrame()
+            
+            # Convert records to DataFrame
+            df = pd.DataFrame(result['records'])
+            
+            # Convert timestamp to datetime
+            df['HourUTC'] = pd.to_datetime(df['HourUTC'])
+            
+            # Sort by timestamp
+            df = df.sort_values('HourUTC')
+            
+            return df
+            
+        except requests.exceptions.RequestException as e:
+            self.logger.error(f"Error fetching data: {str(e)}")
+            return pd.DataFrame()
+        except Exception as e:
+            self.logger.error(f"Unexpected error: {str(e)}")
+            return pd.DataFrame()
+    
+    def fetch_historical_data(self, days=30, price_area='SE4'):
+        """
+        Fetch historical electricity spot prices
+        
+        Args:
+            days (int): Number of days of historical data to fetch
+            price_area (str): Price area (e.g., 'DK1', 'DK2')
+        
+        Returns:
+            pd.DataFrame: DataFrame containing the historical spot prices
+        """
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=days)
+        
+        return self.fetch_elspot_prices(
+            start_date=start_date.strftime('%Y-%m-%d'),
+            end_date=end_date.strftime('%Y-%m-%d'),
+            price_area=price_area
+        )
+
+
+def fetch_and_prepare_data(n_years=5):
+    """Fetch and prepare data for analysis"""
+    print("Fetching data from Energinet...")
+    fetcher = EnerginetDataFetcher()
+    df = fetcher.fetch_historical_data(days=365*n_years)
+    df = df[['HourUTC','SpotPriceDKK']]
+    df.sort_index(inplace=True)
+
+    print("\nDataset Info:")
+    print(df.info())
+    print("\nSample of the data:")
+    print(df.head())
+    print("\nData Statistics:")
+    print(df['SpotPriceDKK'].describe())
+    
+    return df
+
+# Fetch the data
+df = fetch_and_prepare_data(n_years=5)
+
+# Display data coverage
+print("\nData Coverage:")
+print(f"Date Range: {df['HourUTC'].min()} to {df['HourUTC'].max()}")
+print(f"Total Hours: {len(df)}")
+
+
+# ## Data Quality Check
+#
+# Let's examine the data quality and identify any potential issues.
+
+import seaborn as sns
+# Check for missing values
+print("Missing Values:")
+print(df.isnull().sum())
+
+# Check for duplicates
+print("\nDuplicate Timestamps:")
+print(df[df.duplicated(subset=['HourUTC'], keep=False)])
+
+# Check for outliers
+Q1 = df['SpotPriceDKK'].quantile(0.25)
+Q3 = df['SpotPriceDKK'].quantile(0.75)
+IQR = Q3 - Q1
+outliers = df[(df['SpotPriceDKK'] < (Q1 - 1.5 * IQR)) | (df['SpotPriceDKK'] > (Q3 + 1.5 * IQR))]
+print("\nPotential Outliers:")
+print(f"Number of outliers: {len(outliers)}")
+print(f"Outlier percentage: {(len(outliers) / len(df)) * 100:.2f}%")
+
+# Plot price distribution with outliers highlighted
+plt.figure(figsize=(12, 6))
+sns.boxplot(data=df, y='SpotPriceDKK')
+plt.title('Price Distribution with Outliers')
+plt.ylabel('Price (DKK)')
+plt.tight_layout()
+plt.savefig('price_distribution_with_outliers.png')
+plt.show()
+
+# ## Preprocess Data
+
+# 1. Data Preprocessing
+def preprocess_data(df):
     """
     Load and preprocess the electricity price data
     """
-    # Load data
-    df = pd.read_csv(file_path, index_col=0)
-    
+
     # Rename columns if they have spaces or special characters
     df.columns = [col.strip() for col in df.columns]
     
@@ -43,9 +203,107 @@ def load_and_preprocess_data(file_path):
     
     return df
 
+df = preprocess_data(df)
+
+def exploratory_data_analysis(df):
+    """Perform exploratory data analysis"""
+    print("\nPerforming exploratory data analysis...")
+    
+    # 1. Price distribution
+    plt.figure(figsize=(10, 6))
+    sns.histplot(data=df, x='SpotPriceDKK', bins=50)
+    plt.title('Distribution of Electricity Prices')
+    plt.xlabel('Price (DKK)')
+    plt.ylabel('Count')
+    plt.close()
+    
+
+    
+    # 2. Average price by hour of day
+    hourly_avg = df.groupby('hour')['SpotPriceDKK'].mean()
+    plt.figure(figsize=(12, 6))
+    hourly_avg.plot(kind='bar')
+    plt.title('Average Price by Hour of Day')
+    plt.xlabel('Hour of Day')
+    plt.ylabel('Average Price (DKK)')
+    plt.tight_layout()
+    plt.show()
+    
+    # 3. Price patterns by day of week
+    daily_avg = df.groupby('day_of_week')['SpotPriceDKK'].mean()
+    plt.figure(figsize=(12, 6))
+    daily_avg.plot(kind='bar')
+    plt.title('Average Price by Day of Week')
+    plt.xlabel('Day of Week')
+    plt.ylabel('Average Price (DKK)')
+    plt.tight_layout()
+    plt.show()
+    
+    # 4. Monthly price patterns
+    monthly_avg = df.groupby('month')['SpotPriceDKK'].mean()
+    plt.figure(figsize=(12, 6))
+    monthly_avg.plot(kind='bar')
+    plt.title('Average Price by Month')
+    plt.xlabel('Month')
+    plt.ylabel('Average Price (DKK)')
+    plt.tight_layout()
+    plt.show()
+
+# Perform EDA
+exploratory_data_analysis(df)
+
+# ## Create Features
+
+# 2. Feature Engineering and Sequence Creation
+def create_features(df, price_col):
+    """
+    Create features for the model, ensuring proper time boundaries
+    
+    Args:
+        df: DataFrame with price data
+        price_col: Column name for the price
+    """
+    df = df.copy()
+    
+    # Create lagged features (only using past data)
+    for lag in [24, 48, 72, 168]:  # 1 day, 2 days, 3 days, 1 week
+        df[f'price_lag_{lag}h'] = df[price_col].shift(lag)
+    
+    # Create rolling statistics (only using past data)
+    for window in [24, 168]:
+        df[f'price_mean_{window}h'] = df[price_col].rolling(window).mean().shift(1)
+        df[f'price_std_{window}h'] = df[price_col].rolling(window).std().shift(1)
+        df[f'price_max_{window}h'] = df[price_col].rolling(window).max().shift(1)
+        df[f'price_min_{window}h'] = df[price_col].rolling(window).min().shift(1)
+    
+    return df
+
+# ## Create Sequences
+
+def create_sequences(df, feature_columns, target_columns, lookback):
+    """
+    Create sequences for LSTM model
+    
+    Args:
+        df: DataFrame with features and targets
+        feature_columns: List of feature column names
+        target_columns: List of target column names
+        lookback: Number of historical hours to use
+    """
+    X, y = [], []
+    for i in range(len(df) - lookback + 1):
+        X.append(df[feature_columns].iloc[i:i+lookback].values)
+        y.append(df[target_columns].iloc[i+lookback-1].values)
+    
+    return np.array(X), np.array(y)
+
+
+
+# ## Prepare Lstm Data
+
 # 2. Feature Engineering and Sequence Creation
 def prepare_lstm_data(df, price_col='SpotPriceDKK', lookback=168, forecast_horizon=24, 
-                     train_size=0.7, val_size=0.15, test_size=0.15, data_dir='./data/'):
+                     train_size=0.7, val_size=0.15, test_size=0.15):
     """
     Prepare data for LSTM model with a specified lookback period
     
@@ -117,57 +375,17 @@ def prepare_lstm_data(df, price_col='SpotPriceDKK', lookback=168, forecast_horiz
     # Create sequences for testing data
     X_test, y_test = create_sequences(test_df, feature_columns, target_columns, lookback)
     
-    # Save processed data
-    train_csv = os.path.join(data_dir, 'train_data_lookback168_horizon24.csv')
-    val_csv = os.path.join(data_dir, 'val_data_lookback168_horizon24.csv')
-    test_csv = os.path.join(data_dir, 'test_data_lookback168_horizon24.csv')
-    
-    train_df.to_csv(train_csv, index=True)
-    val_df.to_csv(val_csv, index=True)
-    test_df.to_csv(test_csv, index=True)
+
     
     return X_train, X_val, X_test, y_train, y_val, y_test, feature_scaler, target_scaler, train_df, val_df, test_df
 
-def create_features(df, price_col, forecast_horizon):
-    """
-    Create features for the model, ensuring proper time boundaries
-    
-    Args:
-        df: DataFrame with price data
-        price_col: Column name for the price
-        forecast_horizon: Number of hours ahead to forecast
-    """
-    df = df.copy()
-    
-    # Create lagged features (only using past data)
-    for lag in [24, 48, 72, 168]:  # 1 day, 2 days, 3 days, 1 week
-        df[f'price_lag_{lag}h'] = df[price_col].shift(lag)
-    
-    # Create rolling statistics (only using past data)
-    for window in [24, 168]:
-        df[f'price_mean_{window}h'] = df[price_col].rolling(window).mean().shift(1)
-        df[f'price_std_{window}h'] = df[price_col].rolling(window).std().shift(1)
-        df[f'price_max_{window}h'] = df[price_col].rolling(window).max().shift(1)
-        df[f'price_min_{window}h'] = df[price_col].rolling(window).min().shift(1)
-    
-    return df
+df.head()
 
-def create_sequences(df, feature_columns, target_columns, lookback):
-    """
-    Create sequences for LSTM model
-    
-    Args:
-        df: DataFrame with features and targets
-        feature_columns: List of feature column names
-        target_columns: List of target column names
-        lookback: Number of historical hours to use
-    """
-    X, y = [], []
-    for i in range(len(df) - lookback + 1):
-        X.append(df[feature_columns].iloc[i:i+lookback].values)
-        y.append(df[target_columns].iloc[i+lookback-1].values)
-    
-    return np.array(X), np.array(y)
+print("Preparing data for LSTM...")
+X_train, X_val, X_test, y_train, y_val, y_test, feature_scaler, target_scaler, train_df, val_df, test_df = prepare_lstm_data(
+    df, price_col='SpotPriceDKK')
+
+# ## Build Lstm Model
 
 # 3. Model Building
 def build_lstm_model(lookback, n_features, n_outputs=24):
@@ -186,6 +404,8 @@ def build_lstm_model(lookback, n_features, n_outputs=24):
     optimizer = Adam(learning_rate=0.01, clipnorm=1.0)
     model.compile(optimizer=optimizer, loss='mse')
     return model
+
+
 
 # Custom callback to track original MSE and MAE
 class OriginalMetricsCallback(Callback):
@@ -238,7 +458,7 @@ class OriginalMetricsCallback(Callback):
         logs['val_original_mse'] = val_mse
         logs['val_original_mae'] = val_mae
 
-# Learning rate scheduler function
+
 def lr_schedule(epoch, initial_lr=0.01, decay_factor=0.5, decay_epochs=10):
     """
     Learning rate scheduler function that reduces the learning rate by a factor
@@ -258,7 +478,11 @@ def lr_schedule(epoch, initial_lr=0.01, decay_factor=0.5, decay_epochs=10):
     return initial_lr
 
 # 4. Training and Evaluation
-def train_and_evaluate_model(X_train, X_val, y_train, y_val, epochs=1, batch_size=32, target_scaler=None):
+
+# ## Train And Evaluate Model
+
+# 4. Training and Evaluation
+def train_and_evaluate_model(X_train, X_val, y_train, y_val, epochs=100, batch_size=32, target_scaler=None):
     """
     Train and evaluate LSTM model
     
@@ -392,15 +616,19 @@ def train_and_evaluate_model(X_train, X_val, y_train, y_val, epochs=1, batch_siz
         plt.legend()
         plt.grid(True)
         
-        # Save the original metrics plot
-        os.makedirs('./plots/', exist_ok=True)
-        plt.savefig('./plots/original_training_metrics.png', dpi=300)
-        plt.close()
+        plt.show()
     
     return model, history, y_train_pred, y_val_pred
 
-# 5. Final Evaluation
-def evaluate_on_test_set(model, X_test, y_test, target_scaler, test_dates, price_col='SpotPriceDKK', save_path='./plots/'):
+
+# 3. Train and evaluate model
+print("Training and evaluating model...")
+model, history, y_train_pred, y_val_pred = train_and_evaluate_model(X_train, X_val, y_train, y_val, epochs=20, target_scaler=target_scaler)
+
+
+# ## Evaluate On Test Set
+
+def evaluate_on_test_set(model, X_test, y_test, target_scaler):
     """
     Evaluate the model on the test set
     
@@ -409,7 +637,6 @@ def evaluate_on_test_set(model, X_test, y_test, target_scaler, test_dates, price
         X_test: Test features
         y_test: Test targets
         target_scaler: Scaler used for target values
-        test_dates: Dates for the test set
         price_col: Column name for the price
         save_path: Path to save the plots
     """
@@ -437,253 +664,32 @@ def evaluate_on_test_set(model, X_test, y_test, target_scaler, test_dates, price
     test_mae_original = np.mean(np.abs(y_test_original - y_test_pred_original))
     
     print(f'Test Original MSE: {test_mse_original:.4f}, Test Original MAE: {test_mae_original:.4f}')
+        
     
-    # Generate baseline predictions
-    baseline_predictions = generate_baseline_predictions(y_test_original, y_test_pred_original, test_dates, price_col, save_path)
-    
-    # Visualize results
-    mse, mae, overall_mse, overall_mae, overall_r2 = visualize_results(
-        None, y_test, y_test_pred, target_scaler, test_dates, price_col, save_path, baseline_predictions
-    )
-    
-    
-    return y_test_pred, test_mse_original, test_mae_original, overall_mse, overall_mae, overall_r2
+    return y_test_pred, test_mse_original, test_mae_original
 
-def generate_baseline_predictions(y_test_original, y_test_pred_original, test_dates, price_col='SpotPriceDKK', save_path='./plots/'):
-    """
-    Generate baseline predictions for comparison with the LSTM model
-    
-    Args:
-        y_test_original: Original scale test targets
-        test_dates: Dates for the test set
-        price_col: Column name for the price
-        save_path: Path to save the plots
-        
-    Returns:
-        Dictionary containing baseline predictions and metrics
-    """
-    # Create directory for plots if it doesn't exist
-    os.makedirs(save_path, exist_ok=True)
-    
-    # 1. Mean baseline: Use the mean price of the training data for all predictions
-    # Since we don't have the training data here, we'll use the mean of the test data
-    # In a real scenario, you would use the mean of the training data
-    mean_price = np.mean(y_test_original)
-    mean_baseline = np.full_like(y_test_original, mean_price)
-    
-    # 2. Naive baseline: Use the last known price for all future predictions
-    # For each prediction, we'll use the last price in the sequence
-    naive_baseline = np.zeros_like(y_test_original)
-    for i in range(len(y_test_original)):
-        # Get the last price from the previous 24 hours
-        if i < 24:  # For the first 24 samples, we don't have enough history
-            naive_baseline[i] = y_test_original[i, 0]  # Use the first hour's price
-        else:
-            naive_baseline[i] = y_test_original[i-24, 0]  # Use the price from 24 hours ago
-    
-    # 3. Persistence baseline: Use the last known price for the next hour
-    # This is a more sophisticated version of the naive baseline
-    persistence_baseline = np.zeros_like(y_test_original)
-    for i in range(len(y_test_original)):
-        if i == 0:  # For the first sample, we don't have a previous price
-            persistence_baseline[i] = y_test_original[i, 0]
-        else:
-            persistence_baseline[i] = y_test_original[i-1, 0]
-    
-    # Calculate metrics for each baseline
-    mean_mse = np.mean(np.square(y_test_original - mean_baseline))
-    mean_mae = np.mean(np.abs(y_test_original - mean_baseline))
-    
-    naive_mse = np.mean(np.square(y_test_original - naive_baseline))
-    naive_mae = np.mean(np.abs(y_test_original - naive_baseline))
-    
-    persistence_mse = np.mean(np.square(y_test_original - persistence_baseline))
-    persistence_mae = np.mean(np.abs(y_test_original - persistence_baseline))
-    
-    print("\nBaseline Comparison:")
-    print(f"Mean Baseline - MSE: {mean_mse:.4f}, MAE: {mean_mae:.4f}")
-    print(f"Naive Baseline - MSE: {naive_mse:.4f}, MAE: {naive_mae:.4f}")
-    print(f"Persistence Baseline - MSE: {persistence_mse:.4f}, MAE: {persistence_mae:.4f}")
-    
-    # Plot baseline comparisons
-    plt.figure(figsize=(15, 10))
-    
-    # Plot MSE comparison
-    plt.subplot(2, 2, 1)
-    plt.bar(['Mean', 'Naive', 'Persistence', 'LSTM'], 
-            [mean_mse, naive_mse, persistence_mse, np.mean(np.square(y_test_original - y_test_pred_original))])
-    plt.title('MSE Comparison')
-    plt.ylabel('Mean Squared Error')
-    plt.grid(True)
-    
-    # Plot MAE comparison
-    plt.subplot(2, 2, 2)
-    plt.bar(['Mean', 'Naive', 'Persistence', 'LSTM'], 
-            [mean_mae, naive_mae, persistence_mae, np.mean(np.abs(y_test_original - y_test_pred_original))])
-    plt.title('MAE Comparison')
-    plt.ylabel('Mean Absolute Error')
-    plt.grid(True)
-    plt.savefig(os.path.join(save_path, 'baseline_comparison_mae_bar.png'), dpi=300)
-    plt.close()
-    # Plot example forecasts with baselines
-    # Select a random sample of 3 days
-    n_days = 3
-    sample_indices = np.random.choice(range(len(y_test_original)), n_days, replace=False)
-    
-    plt.figure(figsize=(15, 10))
+y_test_pred, test_mse_original, test_mae_original = evaluate_on_test_set(model, X_test, y_test, target_scaler)
 
-    for i, idx in enumerate(sample_indices):
-        actual_prices = y_test_original[idx]
-        lstm_prices = y_test_pred_original[idx]
-        mean_prices = mean_baseline[idx]
-        naive_prices = naive_baseline[idx]
-        persistence_prices = persistence_baseline[idx]
-        
-        # Get the date for this forecast
-        forecast_date = test_dates[idx]
-        
-        # Create hour timestamps
-        forecast_hours = [forecast_date + timedelta(hours=h) for h in range(1, 25)]
-        
-        plt.subplot(n_days, 1, i+1)
-        plt.plot(forecast_hours, actual_prices, 'b-', label='Actual Price')
-        plt.plot(forecast_hours, lstm_prices, 'r--', label='LSTM Prediction')
-        plt.plot(forecast_hours, mean_prices, 'g--', label='Mean Baseline')
-        plt.plot(forecast_hours, naive_prices, 'y--', label='Naive Baseline')
-        plt.plot(forecast_hours, persistence_prices, 'm--', label='Persistence Baseline')
-        plt.title(f'Day-Ahead Forecast for {forecast_date.date()}')
-        plt.xlabel('Hour')
-        plt.ylabel(f'{price_col}')
-        plt.grid(True)
-        
-        plt.xticks(rotation=45)
-    plt.legend()
-    plt.tight_layout()
-    
-    # Save the baseline comparison plot
-    plt.savefig(os.path.join(save_path, 'baseline_comparison.png'), dpi=300)
-    plt.close()
-    
-    # Return baseline predictions and metrics
-    return {
-        'mean_baseline': mean_baseline,
-        'naive_baseline': naive_baseline,
-        'persistence_baseline': persistence_baseline,
-        'mean_mse': mean_mse,
-        'mean_mae': mean_mae,
-        'naive_mse': naive_mse,
-        'naive_mae': naive_mae,
-        'persistence_mse': persistence_mse,
-        'persistence_mae': persistence_mae
-    }
+# ## Generate Day Ahead Forecast
 
-# 6. Visualization
-def visualize_results(df, y_test, y_test_pred, target_scaler, test_dates, price_col='SpotPriceDKK', save_path='./plots/', baseline_predictions=None):
-    """
-    Visualize prediction results and save the figures
-    """
-    # Create directory for plots if it doesn't exist
-    os.makedirs(save_path, exist_ok=True)
-    
-    # Inverse transform predictions
-    y_test_inv = target_scaler.inverse_transform(y_test)
-    y_pred_inv = target_scaler.inverse_transform(y_test_pred)
-    
-    # Calculate metrics for each forecast hour
-    mse = []
-    mae = []
-    for i in range(y_test_inv.shape[1]):
-        mse.append(mean_squared_error(y_test_inv[:, i], y_pred_inv[:, i]))
-        mae.append(mean_absolute_error(y_test_inv[:, i], y_pred_inv[:, i]))
-    
-    # Plot metrics by forecast hour
-    plt.figure(figsize=(12, 5))
-    plt.subplot(1, 2, 1)
-    plt.plot(range(1, 25), mse, 'o-', label='MSE')
-    plt.title('MSE by Forecast Hour')
-    plt.xlabel('Hours Ahead')
-    plt.ylabel('Mean Squared Error')
-    plt.grid(True)
-    
-    plt.subplot(1, 2, 2)
-    plt.plot(range(1, 25), mae, 'o-', label='MAE')
-    plt.title('MAE by Forecast Hour')
-    plt.xlabel('Hours Ahead')
-    plt.ylabel('Mean Absolute Error')
-    plt.grid(True)
-    plt.tight_layout()
-    
-    # Save the metrics plot
-    plt.savefig(os.path.join(save_path, 'forecast_metrics_by_hour.png'), dpi=300)
-    plt.close()
-    
-    # Plot example forecasts
-    # Select a random sample of 3 days
-    n_days = 3
-    sample_indices = np.random.choice(range(len(y_test_inv)), n_days, replace=False)
-    
-    plt.figure(figsize=(15, 5 * n_days))
-    for i, idx in enumerate(sample_indices):
-        actual_prices = y_test_inv[idx]
-        predicted_prices = y_pred_inv[idx]
-        
-        # Get the date for this forecast
-        forecast_date = test_dates[idx]
-        
-        # Create hour timestamps
-        forecast_hours = [forecast_date + timedelta(hours=h) for h in range(1, 25)]
-        
-        plt.subplot(n_days, 1, i+1)
-        plt.plot(forecast_hours, actual_prices, 'b-', label='Actual Price')
-        plt.plot(forecast_hours, predicted_prices, 'r--', label='Predicted Price')
-        
-        # Add baseline predictions if available
-        if baseline_predictions is not None:
-            plt.plot(forecast_hours, baseline_predictions['mean_baseline'][idx], 'g--', label='Mean Baseline')
-            plt.plot(forecast_hours, baseline_predictions['naive_baseline'][idx], 'y--', label='Naive Baseline')
-            plt.plot(forecast_hours, baseline_predictions['persistence_baseline'][idx], 'm--', label='Persistence Baseline')
-        
-        plt.title(f'Day-Ahead Forecast for {forecast_date.date()}')
-        plt.xlabel('Hour')
-        plt.ylabel(f'{price_col}')
-        plt.grid(True)
-        plt.legend()
-        plt.xticks(rotation=45)
-    
-    plt.tight_layout()
-    
-    # Save the sample forecasts plot
-    plt.savefig(os.path.join(save_path, 'sample_forecasts.png'), dpi=300)
-    plt.close()
-    
-    # Calculate overall metrics
-    overall_mse = mean_squared_error(y_test_inv.flatten(), y_pred_inv.flatten())
-    overall_mae = mean_absolute_error(y_test_inv.flatten(), y_pred_inv.flatten())
-    overall_r2 = r2_score(y_test_inv.flatten(), y_pred_inv.flatten())
-    
-    print(f'Overall MSE: {overall_mse:.2f}')
-    print(f'Overall MAE: {overall_mae:.2f}')
-    print(f'Overall R²: {overall_r2:.4f}')
-    
-    # Free up memory
-    del y_test_inv, y_pred_inv
-    gc.collect()
-    
-    return mse, mae, overall_mse, overall_mae, overall_r2
-
-# 7. Forecast Generation for Next Day
-def generate_day_ahead_forecast(model, latest_data, feature_scaler, target_scaler, last_known_timestamp, price_col='SpotPriceDKK'):
+def generate_day_ahead_forecast(model, test_df, target_scaler, price_col='SpotPriceDKK'):
     """
     Generate forecasts for the next 24 hours
     
     Parameters:
     model: Trained LSTM model
-    latest_data: NumPy array containing the latest feature data
-    feature_scaler: Scaler used for features
+    test_df: test dataframe
     target_scaler: Scaler used for targets
-    last_known_timestamp: The timestamp of the last known data point
     price_col: Column name for price data
     """
+    
+    feature_columns = [col for col in test_df.columns if not col.startswith('target_') and col != price_col]
+    latest_data = test_df[feature_columns].iloc[-168:].values
+
+    # Get the last known timestamp from the test dataframe
+    last_known_timestamp = test_df.index[-1]
+
+    
     # Prepare the input data (already scaled)
     input_data = latest_data.reshape(1, latest_data.shape[0], latest_data.shape[1])
     
@@ -705,145 +711,73 @@ def generate_day_ahead_forecast(model, latest_data, feature_scaler, target_scale
     
     # Generate baseline forecasts
     # 1. Mean baseline
-    mean_price = np.mean(prediction)
+    mean_price = test_df[price_col].mean()
     mean_forecast = np.full(24, mean_price)
     
     # 2. Naive baseline (use the last known price)
-    naive_forecast = np.full(24, prediction[0])
+    naive_forecast = np.full(24, test_df[price_col].iloc[-1])
     
-    # 3. Persistence baseline (use the last known price for the next hour)
-    persistence_forecast = np.full(24, prediction[0])
+    # 3. Persistence baseline 
+    persistence_forecast = test_df[price_col].iloc[-191:-167].values
     
     # Add baseline forecasts to the dataframe
     forecast_df[f'Mean_Baseline'] = mean_forecast
     forecast_df[f'Naive_Baseline'] = naive_forecast
     forecast_df[f'Persistence_Baseline'] = persistence_forecast
-    
     return forecast_df
 
-# 8. Full Pipeline
-def run_electricity_price_forecasting(file_path, price_col='SpotPriceDKK', save_path='./plots/', data_dir='./data/'):
-    """
-    Run the full electricity price forecasting pipeline
-    
-    Args:
-        file_path: Path to the raw data file
-        price_col: Column name for the price
-        save_path: Path to save the plots
-        data_dir: Directory to save/load the processed data
-    """
-    # 1. Load and preprocess data
-    print("Loading and preprocessing data...")
-    df = load_and_preprocess_data(file_path)
-    
-    # 2. Prepare data for LSTM
-    print("Preparing data for LSTM...")
-    X_train, X_val, X_test, y_train, y_val, y_test, feature_scaler, target_scaler, train_df, val_df, test_df = prepare_lstm_data(
-        df, price_col=price_col, data_dir=data_dir
-    )
-    
-    # Free up memory
-    del df
-    gc.collect()
-    
-    # 3. Train and evaluate model
-    print("Training and evaluating model...")
-    model, history, y_train_pred, y_val_pred = train_and_evaluate_model(X_train, X_val, y_train, y_val, target_scaler=target_scaler)
-    
-    # Free up memory
-    del X_train, y_train, y_train_pred, y_val_pred
-    gc.collect()
-    
-    # 4. Final evaluation on test set
-    print("Evaluating on test set...")
-    test_dates = None
-    if train_df is not None:
-        test_dates = train_df.index[:len(y_test)]
-    else:
-        # If train_df is None, we need to load the test dates from the CSV
-        test_csv = os.path.join(data_dir, f'test_data_lookback168_horizon24.csv')
-        test_df = pd.read_csv(test_csv, index_col=0, parse_dates=True)
-        test_dates = test_df.index[:len(y_test)]
-        del test_df
-        gc.collect()
-    
-    y_test_pred, test_mse_original, test_mae_original, overall_mse, overall_mae, overall_r2 = evaluate_on_test_set(
-        model, X_test, y_test, target_scaler, test_dates, price_col, save_path
-    )
+
+
+forecast_df = generate_day_ahead_forecast(
+model, test_df, target_scaler
+)
     
 
-    
-    # 5. Generate forecast for next day (using the last available data)
-    print("Generating forecast for next day...")
-    # Load the test data to get the latest data
-    test_csv = os.path.join(data_dir, f'test_data_lookback168_horizon24.csv')
-    test_df = pd.read_csv(test_csv, index_col=0, parse_dates=True)
-    latest_data = X_test[-1] if X_test is not None else None
-    
-    if latest_data is None:
-        # If X_test is None, we need to create the latest data
-        feature_columns = [col for col in test_df.columns if not col.startswith('target_') and col != price_col and col != 'Unnamed: 0']
-        latest_data = test_df[feature_columns].iloc[-168:].values
-    
-    # Get the last known timestamp from the test dataframe
-    last_known_timestamp = test_df.index[-1]
-    
-    forecast_df = generate_day_ahead_forecast(
-        model, latest_data, feature_scaler, target_scaler, last_known_timestamp, price_col
-    )
-    
-    print("\nDay-ahead forecast:")
-    print(forecast_df)
-    
-    # Plot forecast with baselines
-    plt.figure(figsize=(12, 6))
-    plt.plot(forecast_df.index, forecast_df[f'Forecast_{price_col}'], 'r-o', label='LSTM Forecast')
-    plt.plot(forecast_df.index, forecast_df['Mean_Baseline'], 'g--', label='Mean Baseline')
-    plt.plot(forecast_df.index, forecast_df['Naive_Baseline'], 'y--', label='Naive Baseline')
-    plt.plot(forecast_df.index, forecast_df['Persistence_Baseline'], 'm--', label='Persistence Baseline')
-    plt.title('Day-Ahead Electricity Price Forecast with Baselines')
-    plt.xlabel('Hour')
-    plt.ylabel(price_col)
-    plt.grid(True)
-    plt.legend()
-    plt.xticks(rotation=45)
-    plt.tight_layout()
-    
-    # Save the day-ahead forecast plot
-    plt.savefig(os.path.join(save_path, 'day_ahead_forecast.png'), dpi=300)
-    plt.close()
-    
-    # Also save the training history
-    plt.figure(figsize=(10, 6))
-    plt.plot(history.history['loss'], label='Training Loss')
-    plt.plot(history.history['val_loss'], label='Validation Loss')
-    plt.title('Model Loss During Training')
-    plt.ylabel('Loss')
-    plt.xlabel('Epoch')
-    plt.legend()
-    plt.grid(True)
-    plt.savefig(os.path.join(save_path, 'training_history.png'), dpi=300)
-    plt.close()
-    
-    # Save the model
-    model_path = os.path.join(data_dir, 'electricity_price_model.h5')
-    model.save(model_path)
-    print(f"Model saved to {model_path}")
-    
 
-    
-    return model, feature_scaler, target_scaler, forecast_df, overall_mse, overall_mae, overall_r2
 
-# Example usage
-if __name__ == "__main__":
-    # Replace with your actual file path
-    file_path = "data/electricity_hourly_price_5y.csv"
-    model, feature_scaler, target_scaler, forecast_df, mse, mae, r2 = run_electricity_price_forecasting(file_path)
-    
-    # Save model and scalers for future use
-    model.save("electricity_price_model.h5")
-    
-    print(f"Model and forecasting pipeline completed successfully.")
-    print(f"Overall MSE: {mse:.2f}")
-    print(f"Overall MAE: {mae:.2f}")
-    print(f"Overall R²: {r2:.4f}")
+
+# Plot forecast with baselines
+plt.figure(figsize=(12, 6))
+plt.plot(forecast_df.index, forecast_df[f'Forecast_SpotPriceDKK'], 'r-o', label='LSTM Forecast')
+plt.plot(forecast_df.index, forecast_df['Mean_Baseline'], 'g--', label='Mean Baseline')
+plt.plot(forecast_df.index, forecast_df['Naive_Baseline'], 'y--', label='Naive Baseline')
+plt.plot(forecast_df.index, forecast_df['Persistence_Baseline'], 'm--', label='Persistence Baseline')
+plt.plot(forecast_df.index, df['SpotPriceDKK'].iloc[-24:].values, 'b--', label='True Price')
+
+plt.title('Day-Ahead Electricity Price Forecast with Baselines')
+plt.xlabel('Hour')
+plt.ylabel('Price')
+plt.grid(True)
+plt.legend()
+plt.xticks(rotation=45)
+plt.tight_layout()
+plt.show()
+
+# ## Limitations and Future Work of the Electricity Price Forecasting Solution
+#
+
+# ### Current Limitations
+# 1. Data Quality and Availability:
+# * The model relies heavily on historical price data, which may not capture sudden market changes or regulatory shifts.
+# * The solution doesn't incorporate external factors like weather forecasts, which significantly impact electricity demand.
+#
+# 2. Model Architecture:
+# * The current implementation uses a relatively simple LSTM architecture that might not capture complex long-term dependencies.
+# * The model doesn't account for uncertainty in predictions (no confidence intervals)
+#
+# ### Future Work
+#
+# * Conduct hyperparameter search for the LSTM model and train for more epoches
+#
+# * Implement feature selection techniques to identify the most predictive variables
+#
+# * Implement attention mechanisms to better capture long-range dependencies
+#
+# * Implement Bayesian neural networks to provide uncertainty estimates
+#
+# * Create models that can forecast different time horizons (hourly, daily, weekly)
+#
+#
+#
+#
+#
